@@ -11,7 +11,7 @@ const exphbs = require("express-handlebars");
 const nodemailer = require("nodemailer");
 var hbs = require("nodemailer-express-handlebars");
 const { date } = require('joi');
-var email = '';
+
 //node mailer
 let transporter = nodemailer.createTransport({
   service: "gmail",
@@ -108,7 +108,7 @@ async function postotp(req, res) {
   let { otp, id } = req.body;
   console.log(id)
   console.log(otp)
-  let userotp = await otpSchema.findOne({ uid: id })
+  let userotp = await otpSchema.findOne({ uid: id ,status:'active'})
   console.log(userotp.expired_at)
   console.log(userotp.created_at)
   let ex = Date.now()
@@ -118,7 +118,8 @@ async function postotp(req, res) {
   else {
     if (otp == userotp.otp) {
       let user = await User.findOneAndUpdate({ _id: id }, { $set: { status: true } })
-
+      await otpSchema.deleteMany({ uid: user._id, status: "inactive" })
+      await otpSchema.findOneAndUpdate({ uid: user.id,status:'active' }, { $set: { status: 'verified'} } )
       res.send({ "err": 0, "msg": "user verified sucessfully" })
     }
     else {
@@ -129,37 +130,58 @@ async function postotp(req, res) {
 }
 
 //resend otp
-async function resend(req, res)
-{
-    const otp = await function generateOTP(limit) {
+async function resend(req, res) {
+  // Declare a digits variable 
+  const otp = await function generateOTP(limit) {
 
-      // Declare a digits variable 
-      // which stores all digits
-      var digits = '0123456789';
-      let OTP = '';
-      for (let i = 0; i < limit; i++) {
-        OTP += digits[Math.floor(Math.random() * 10)];
-      }
-      return OTP
+    // which stores all digits
+    var digits = '0123456789';
+    let OTP = '';
+    for (let i = 0; i < limit; i++) {
+      OTP += digits[Math.floor(Math.random() * 10)];
     }
+    return OTP
+  }
 
   let sendotp = otp(5);
+  console.log(req.body.email)
+  let user = await User.findOne({email: req.body.email})
+  //  let user1=await otpSchema.findOneAndDelete({ uid: user._id })
   
-  let user = await User.findOne({ email: email })
-   let user1=await otpSchema.findOneAndDelete({ uid: user._id })
   var userid = user._id;
-  const userotp = new otpSchema({
+  
+  let count = await otpSchema.aggregate([
+    {
+      '$match': {
+        'uid': '' + userid,
+        'status': {
+          '$in': [
+            'active', 'inactive'
+          ]
+        }
+      }
+    }, {
+      '$count': 'uid'
+    }
+  ])
+  
+  console.log(count[0].uid)
+  let count_otp = count[0].uid
+  if (count_otp <= 3) {
+    await otpSchema.updateMany({ uid: user._id, status: "active" }, { $set: { status: "inactive" } })
+    const userotp = new otpSchema({
       uid: userid,
       otp: sendotp,
       expired_at: Date.now() + 2 * 60 * 1000
-  })
-  let mailOptions = {
+    })
+  
+    let mailOptions = {
       from: "farmanhaider240@gmail.com",
       to: user.email,
       subject: "Activatio Mail",
       template: "mail",
       context: {
-        uname:user.firstName,
+        uname: user.firstName,
         otp: sendotp,
       },
     };
@@ -170,9 +192,34 @@ async function resend(req, res)
         console.log("Mail send : " + req.body.email);
       }
     });
-   await userotp.save();
+    await userotp.save();
     res.send({ "err": 0, "msg": "otp sent on email", 'uid': userid });
+  }
+  else {
+    console.log("3 attempt expire")
+    const admin = await User.findOne({ role: "admin" })
+
+    let mailOptions = {
+      from: "farmanhaider240@gmail.com",
+      to: admin.email,
+      subject: "Blocked user Mail",
+      template: "otpmail",
+      context: {
+        adminname: admin.firstName,
+        email:user.email,
+      },
+    };
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) {
+        console.log(err);
+      } else {
+        console.log("Mail send : " + admin.email);
+      }
+    });
+    res.send({ "err": 1, "msg": "'You've exceeded the maximum number of attempts Try after some time'" })
+  }
 }
+ 
 //user Sign in
 async function signIn(req,res) {
 const { email, password } = req.body;
@@ -206,7 +253,7 @@ const { email, password } = req.body;
     err:0
   });
 }
- 
+ //password rest mail
  async function Resetmail(req, res) {
     let email = req.body.email;
   let mailOptions = {
@@ -226,7 +273,7 @@ const { email, password } = req.body;
       }
     });
   }
-    
+ //change password   
 async function ChangePass(req, res) {
   let { email, password } = req.body;
   const salt = await bcrypt.genSalt(10);
